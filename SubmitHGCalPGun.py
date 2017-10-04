@@ -47,6 +47,7 @@ def parseOptions():
     parser.add_option('', '--noReClust',  action='store_false', dest='RECLUST',  default=True, help='do not re-run RECO-level clustering at NTUP step, default is True (do re-run the clustering).')
     parser.add_option('', '--addGenOrigin',    action='store_true', dest='ADDGENORIG',  default=False, help='add coordinates of the origin vertex for gen particles as well as the mother particle index')
     parser.add_option('', '--addGenExtrapol',  action='store_true', dest='ADDGENEXTR',  default=False, help='add coordinates for the position of each gen particle extrapolated to the first HGCal layer (takes into account magnetic field)')
+    parser.add_option('', '--globalTag',  dest='GLOBALTAG', type='string',  default='auto:phase2_realistic', help='specify the GlobalTag for conditions')
 
     # store options and arguments as global variables
     global opt, args
@@ -75,7 +76,7 @@ def parseOptions():
 
     # set the default config, if not specified in options
     if (opt.CONFIGFILE == ''):
-        opt.CONFIGFILE = 'templates/partGun_'+opt.DTIER+'_template.py'
+        opt.CONFIGFILE = 'templates/job_customization_'+opt.DTIER+'_template.py'
 
     # supported queues with the recommended number of events per hour (e.g. ~4events/1nh for GSD, ~8events/1nh for RECO) + sanity check
     eventsPerHour = {'GSD':4, 'RECO':8, 'NTUP':100}
@@ -190,42 +191,65 @@ def submitHGCalProduction():
     CMSSW_BASE = os.getenv('CMSSW_BASE')
     CMSSW_VERSION = os.getenv('CMSSW_VERSION')
     SCRAM_ARCH = os.getenv('SCRAM_ARCH')
+
+
+    def getCmsDriverCommand(genFragment,
+                            filein,
+                            eventcontent,
+                            datatier,
+                            puscenario,
+                            gt,
+                            steps,
+                            nthreads,
+                            customize,
+                            filename):
+        step = 'step1'
+        if genFragment is not None:
+            step = genFragment
+
+        if 'GEN' in steps:
+            filein = ''
+
+        command = 'cmsDriver.py {} '\
+                  '--mc '\
+                   '--fileout file:dummy.root '\
+                   '{} '\
+                   '{} '\
+                   '--beamspot HLLHC14TeV '\
+                   '{} '\
+                   '{} '\
+                   '{} '\
+                   '{} '\
+                   '--geometry Extended2023D17 '\
+                   '--era Phase2_timing '\
+                   '{} '\
+                   '{} '\
+                   '{} '\
+                   '-n 1 '\
+                   '--no_exec'.format(step,
+                                      filein,
+                                      eventcontent,
+                                      datatier,
+                                      puscenario,
+                                      gt,
+                                      steps,
+                                      nthreads,
+                                      customize,
+                                      filename)
+        print 'cmsDriver command: {}'.format(command)
+        return command
+
+
+
+    # configure the gen fragment
     commonFileNamePrefix = 'partGun'
+    template_file_genfragment = 'templates/partGun_GenFragment_PGun_template_cfi.py'
     partGunType = 'FlatRandom%sGunProducer' % opt.gunType
     if opt.gunMode == 'pythia8':
+        template_file_genfragment = 'templates/partGun_GenFragment_PythiaPGun_template_cfi.py'
         partGunType = 'Pythia8%sGun' % opt.gunType
     if opt.InConeID != '':
         partGunType = 'MultiParticleInConeGunProducer'  # change part gun type if needed, keep opt.gunType unchanged (E or Pt) for the "primary particle"
-
-    # RELVAL
-    DASquery=False
-    if opt.RELVAL != '':
-        DASquery=True
-
-    # in case of PU, GSD needs the MinBias
-    if int(opt.PU) != 0:
-        # we need to get the PU dataset
-        puname=str(opt.PUDS).split('/')[1]
-        # PLEASE NOTE --> using only 20 MinBias files here!! change to to 10000 if you want them all
-        cmd='das_client --limit 20 --query="file dataset='+str(opt.PUDS)+'" | grep '+puname
-        status, thisoutput = commands.getstatusoutput(cmd)
-        if status !=0:
-            print "Error in processing command: "+cmd
-            print "Did you forget running voms-proxy-init?"
-            sys.exit(1)
-        PUList=thisoutput.split()
-        # define as well the template to be added
-        PUSECTION="""
-process.RandomNumberGeneratorService.mix.initialSeed = cms.untracked.uint32(PUSEED)
-process.mix.input.nbPileupEvents.averageNumber = cms.double(PUVALUE)
-process.mix.input.fileNames = cms.untracked.vstring(PUFILES)
-process.mix.bunchspace = cms.int32(25)
-process.mix.minBunch = cms.int32(-12)
-process.mix.maxBunch = cms.int32(3)
-        """
-        PUSECTION=PUSECTION.replace('PUVALUE',opt.PU)
-        PUSECTION=PUSECTION.replace('PUFILES',str(PUList))
-        # print PUSECTION
 
     # in case of InCone generation of particles
     if opt.InConeID != '':
@@ -246,6 +270,31 @@ process.mix.maxBunch = cms.int32(3)
         InConeSECTION=InConeSECTION.replace('DUMMYMaxDeltaR', str(opt.MaxDeltaR))
         InConeSECTION=InConeSECTION.replace('DUMMYMinMomRatio', str(opt.MinMomRatio))
         InConeSECTION=InConeSECTION.replace('DUMMYMaxMomRatio', str(opt.MaxMomRatio))
+
+
+
+    # RELVAL
+    DASquery=False
+    if opt.RELVAL != '':
+        DASquery=True
+
+
+
+    cmsd_gen_fragment = ''
+    cmsd_opt_pu = ''
+    cmsd_opt_datatier = ''
+    cmsd_opt_eventcontent = ''
+    cmsd_opt_globaltag = '--conditions {}'.format(opt.GLOBALTAG)
+    cmsd_opt_steps = ''
+    cmsd_opt_nthreads = ''
+    cmsd_opt_customize = ''
+
+    # in case of PU, GSD needs the MinBias
+    if int(opt.PU) != 0:
+        # # PLEASE NOTE --> using only 20 MinBias files here!! change to to 10000 if you want them all
+        cmsd_opt_pu = " --pileup 'AVE_{}_BX_25ns,{}' ".format(opt.PU, '{"B": (-3, 3)}')
+        cmsd_opt_pu += ' --pileup_input "dbs:{}" '.format(opt.PUDS)
+
 
 
     # previous data tier
@@ -301,9 +350,11 @@ process.mix.maxBunch = cms.int32(3)
     jobCount=0
 
     # read the template file in a single string
-    f_template= open(opt.CONFIGFILE, 'r')
-    template= f_template.read()
+    f_template = open(opt.CONFIGFILE, 'r')
+    template = f_template.read()
     f_template.close()
+
+
 
     for particle in particles:
         nFilesPerJob = 0
@@ -328,6 +379,51 @@ process.mix.maxBunch = cms.int32(3)
                 njobs=len(inputFilesList)
                 nFilesPerJob = 1
 
+        if (opt.DTIER == 'GSD'):
+            # prepare the GEN fragment file (1 for submission)
+            f_template_genfragment = open(template_file_genfragment,'r')
+            template_genfragment = f_template_genfragment.read()
+            f_template_genfragment.close()
+            nParticles = ','.join([particle for i in range(0, opt.NPART)])
+            template_genfragment = template_genfragment.replace('DUMMYIDs', nParticles)
+            template_genfragment = template_genfragment.replace('DUMMYTHRESHMIN', str(opt.thresholdMin))
+            template_genfragment = template_genfragment.replace('DUMMYTHRESHMAX', str(opt.thresholdMax))
+            template_genfragment = template_genfragment.replace('DUMMYETAMIN', str(opt.etaMin))
+            template_genfragment = template_genfragment.replace('DUMMYETAMAX', str(opt.etaMax))
+            template_genfragment = template_genfragment.replace('GUNPRODUCERTYPE', str(partGunType))
+            template_genfragment = template_genfragment.replace('MAXTHRESHSTRING', "Max"+str(opt.gunType))
+            template_genfragment = template_genfragment.replace('MINTHRESHSTRING', "Min"+str(opt.gunType))
+            template_genfragment = template_genfragment.replace('GUNMODE', str(opt.gunMode))
+
+
+            genfragment_filename = 'Configuration/GenProduction/python/GenFragment_cfi.py'
+            genfragment_fullfilename = '{}/src/{}'.format(os.environ['CMSSW_BASE'], genfragment_filename)
+            target_genfragment = open(genfragment_fullfilename, 'w')
+            target_genfragment.write(template_genfragment)
+            target_genfragment.close()
+
+            # set the cmsDriver options
+            cmsd_gen_fragment = genfragment_filename
+            cmsd_opt_datatier = '--datatier GEN-SIM-DIGI-RAW'
+            cmsd_opt_eventcontent = '--eventcontent FEVTDEBUGHLT'
+            cmsd_opt_steps = '--step GEN,SIM,DIGI:pdigi_valid,L1,DIGI2RAW,HLT:@fake'
+            cmsd_opt_nthreads = ' --nThreads 4'
+            cmsd_opt_customize = ''
+            cmsd_opt_filename = '--python_filename {}/cfg/driver.py'.format(outDir)
+
+        cmsdriver_cmd = getCmsDriverCommand(cmsd_gen_fragment,
+                                            '',
+                                            cmsd_opt_eventcontent,
+                                            cmsd_opt_datatier,
+                                            cmsd_opt_pu,
+                                            cmsd_opt_globaltag,
+                                            cmsd_opt_steps,
+                                            cmsd_opt_nthreads,
+                                            cmsd_opt_customize,
+                                            cmsd_opt_filename)
+
+        processCmd(cmsdriver_cmd)
+
         for job in range(1,int(njobs)+1):
             submittxt=' for particle ID '+particle
             if DASquery : submittxt=' for RelVal:'+opt.RELVAL
@@ -349,32 +445,17 @@ process.mix.maxBunch = cms.int32(3)
 
             if (opt.DTIER == 'GSD'):
                 # first prepare replaces for PU
-                if int(opt.PU) == 0:
-                    # no PU
-                    mixing='mixNoPU_cfi'
-                else:
-                    mixing='mix_POISSON_average_cfi'
-                    s_template=s_template.replace('#DUMMYPUSECTION',PUSECTION)
+                if int(opt.PU) != 0:
                     s_template=s_template.replace('PUSEED',str(job))
 
                 # in case of InCone generation of particles
                 if opt.InConeID != '':
+                    # FIXME: check what is this supposed to do
                     s_template=s_template.replace('#DUMMYINCONESECTION',InConeSECTION)
 
                 # prepare GEN-SIM-DIGI inputs
                 nParticles = ','.join([particle for i in range(0,opt.NPART)])
                 s_template=s_template.replace('DUMMYEVTSPERJOB',str(opt.EVTSPERJOB))
-
-                s_template=s_template.replace('DUMMYIDs',nParticles)
-                s_template=s_template.replace('DUMMYTHRESHMIN',str(opt.thresholdMin))
-                s_template=s_template.replace('DUMMYTHRESHMAX',str(opt.thresholdMax))
-                s_template=s_template.replace('DUMMYETAMIN',str(opt.etaMin))
-                s_template=s_template.replace('DUMMYETAMAX',str(opt.etaMax))
-                s_template=s_template.replace('GUNPRODUCERTYPE',str(partGunType))
-                s_template=s_template.replace('MAXTHRESHSTRING',"Max"+str(opt.gunType))
-                s_template=s_template.replace('MINTHRESHSTRING',"Min"+str(opt.gunType))
-                s_template=s_template.replace('DUMMYPU',str(mixing))
-                s_template=s_template.replace('GUNMODE',str(opt.gunMode))
 
 
             elif (opt.DTIER == 'RECO' or opt.DTIER == 'NTUP'):
@@ -384,8 +465,6 @@ process.mix.maxBunch = cms.int32(3)
                 inputFiles = '"' + '", "'.join([recoInputPrefix+str(f) for f in inputFilesListPerJob]) + '"'
                 s_template=s_template.replace('DUMMYINPUTFILELIST',inputFiles)
                 s_template=s_template.replace('DUMMYEVTSPERJOB',str(-1))
-                
-
 
             if (opt.DTIER == 'NTUP'):
                 s_template=s_template.replace('DUMMYRECLUST',str(opt.RECLUST))
