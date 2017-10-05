@@ -7,6 +7,8 @@ import fnmatch
 import time
 import math
 import re
+from dbs3api import api
+from random import shuffle
 
 eosExec = 'eos'
 
@@ -179,6 +181,14 @@ def getInputFileList(DASquery,inPath, inSubDir, local, pattern):
 
     return inputList
 
+
+def get_pu_files(dataset):
+    thefiles = []
+    for block in api.listBlocks(dataset=dataset):
+        for block_file in api.listFiles(block_name=block['block_name']):
+            thefiles.append(block_file['logical_file_name'])
+    return thefiles
+
 ### submission of GSD/RECO production
 def submitHGCalProduction():
 
@@ -239,8 +249,6 @@ def submitHGCalProduction():
         print 'cmsDriver command: {}'.format(command)
         return command
 
-
-
     # configure the gen fragment
     commonFileNamePrefix = 'partGun'
     template_file_genfragment = 'templates/partGun_GenFragment_PGun_template_cfi.py'
@@ -289,12 +297,15 @@ def submitHGCalProduction():
     cmsd_opt_nthreads = ''
     cmsd_opt_customize = ''
 
+    all_pu_files = []
+
     # in case of PU, GSD needs the MinBias
     if int(opt.PU) != 0:
-        # # PLEASE NOTE --> using only 20 MinBias files here!! change to to 10000 if you want them all
         cmsd_opt_pu = " --pileup 'AVE_{}_BX_25ns,{}' ".format(opt.PU, '{"B": (-3, 3)}')
         cmsd_opt_pu += ' --pileup_input "dbs:{}" '.format(opt.PUDS)
-
+        all_pu_files = get_pu_files(opt.PUDS)
+        # shuffle(all_pu_files)
+        print '# of PU files in the dataset {} is {}'.format(opt.PUDS, str(len(all_pu_files)))
 
 
     # previous data tier
@@ -411,6 +422,16 @@ def submitHGCalProduction():
             cmsd_opt_customize = ''
             cmsd_opt_filename = '--python_filename {}/cfg/driver.py'.format(outDir)
 
+
+            def chunks(l, n):
+                """Yield successive n-sized chunks from l."""
+                for i in range(0, len(l), n):
+                    yield l[i:i + n]
+
+            if opt.PU != 0:
+                nchunks = max(int(len(all_pu_files)/100), njobs)
+                perjob_pu_files = list(chunks(all_pu_files, nchunks))
+
         cmsdriver_cmd = getCmsDriverCommand(cmsd_gen_fragment,
                                             '',
                                             cmsd_opt_eventcontent,
@@ -446,8 +467,9 @@ def submitHGCalProduction():
             if (opt.DTIER == 'GSD'):
                 # first prepare replaces for PU
                 if int(opt.PU) != 0:
+                    pufiles_perjob = perjob_pu_files[job]
                     s_template=s_template.replace('PUSEED',str(job))
-
+                    s_template = s_template.replace('PUFILELIST', str(pufiles_perjob))
                 # in case of InCone generation of particles
                 if opt.InConeID != '':
                     # FIXME: check what is this supposed to do
