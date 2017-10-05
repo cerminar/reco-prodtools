@@ -22,8 +22,9 @@ edmPluginRefresh -p ../lib/$SCRAM_ARCH
 
 ## Execute job and retrieve the outputs
 echo "Job running on `hostname` at `date`"
-
-cmsRun ${curDir}/${outDir}/cfg/${cfgFile}
+cd ${curDir}/${outDir}/cfg/
+cmsRun ${cfgFile}
+cd -
 
 # copy to outDir in curDir or at given EOS area
 if [ ${localFlag} == "True" ]
